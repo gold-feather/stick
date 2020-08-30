@@ -8,7 +8,7 @@ import (
 	"net"
 )
 
-type METHOD int
+type METHOD byte
 
 //只定义了两个验证方式，其他的懒得实现
 const (
@@ -84,7 +84,34 @@ func (s Server) chooseMethod(conn net.Conn) METHOD {
 	return NO_ACCEPTABLE_METHODS
 }
 
+func (s Server) auth(conn net.Conn, method METHOD) bool {
+	switch method {
+	//TODO: 实现USERNAME_PASSWORD
+	case USERNAME_PASSWORD:
+		_, err := conn.Write([]byte{SOCKS_VERSION, byte(NO_AUTHENTICATION_REQUIRED)})
+		if err != nil {
+			panic(err)
+		}
+		return false
+	case NO_AUTHENTICATION_REQUIRED:
+		_, err := conn.Write([]byte{SOCKS_VERSION, byte(NO_AUTHENTICATION_REQUIRED)})
+		if err != nil {
+			panic(err)
+		}
+		return true
+	default: //NO_AUTHENTICATION_REQUIRED放在这里处理
+		_, err := conn.Write([]byte{SOCKS_VERSION, byte(NO_AUTHENTICATION_REQUIRED)})
+		if err != nil {
+			panic(err)
+		}
+		return false
+	}
+}
+
 func (s Server) handleConnection(conn net.Conn) {
+	defer conn.Close()
 	method := s.chooseMethod(conn)
-	_ = method
+	if !s.auth(conn, method) {
+		return
+	}
 }
