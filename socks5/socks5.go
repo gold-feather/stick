@@ -8,7 +8,7 @@ import (
 	"net"
 )
 
-type METHOD int
+type METHOD byte
 
 //只定义了两个验证方式，其他的懒得实现
 const (
