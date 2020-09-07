@@ -1,6 +1,7 @@
 package socks5
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -9,18 +10,25 @@ import (
 )
 
 type METHOD byte
+type CMD byte
+type ADDRTYPE byte
 
 //只定义了两个验证方式，其他的懒得实现
 const (
-	SOCKS_VERSION              byte   = 0x05
-	NO_AUTHENTICATION_REQUIRED METHOD = 0x00
-	USERNAME_PASSWORD          METHOD = 0x02
-	NO_ACCEPTABLE_METHODS      METHOD = 0xff
+	SOCKS_VERSION              byte     = 0x05
+	NO_AUTHENTICATION_REQUIRED METHOD   = 0x00
+	USERNAME_PASSWORD          METHOD   = 0x02
+	NO_ACCEPTABLE_METHODS      METHOD   = 0xff
+	CONNECT                    CMD      = 0x01
+	IPV4_ADDRESS               ADDRTYPE = 0x01
+	IPV6_ADDRESS               ADDRTYPE = 0x04
+	DOMAIN_ADDRESS             ADDRTYPE = 0x03
 )
 
 var (
 	ERR_SOCKS_VERSION_MISMATCH = errors.New("socks version isn't 5")
 	ERR_READ_METHODS           = errors.New("read METHODS failed")
+	ERR_UNKNOWN_ADDRESS_TYPE   = errors.New("unknown address type")
 	METHOD_MAP                 = map[byte]METHOD{
 		0x00: NO_AUTHENTICATION_REQUIRED,
 		0x02: USERNAME_PASSWORD,
@@ -114,4 +122,71 @@ func (s Server) handleConnection(conn net.Conn) {
 	if !s.auth(conn, method) {
 		return
 	}
+	request := s.getRequest(conn)
+	_ = request
+}
+
+type request struct {
+	cmd      CMD
+	addrType ADDRTYPE
+	addr     interface{}
+	port     uint16
+}
+
+func (s Server) getRequest(conn net.Conn) request {
+	req := request{}
+	//VER | CMD |  RSV
+	header := make([]byte, 3, 3)
+	_, err := io.ReadFull(conn, header)
+	if err != nil {
+		panic(err)
+	}
+	if header[0] != SOCKS_VERSION {
+		panic(fmt.Errorf("%w: %v", ERR_SOCKS_VERSION_MISMATCH, header[0]))
+	}
+	req.cmd = CMD(header[1])
+	addrType := make([]byte, 1, 1)
+	_, err = io.ReadFull(conn, addrType)
+	if err != nil {
+		panic(err)
+	}
+	req.addrType = ADDRTYPE(addrType[0])
+	switch req.addrType {
+	case IPV4_ADDRESS:
+		addr := make([]byte, 4, 4)
+		_, err := io.ReadFull(conn, addr)
+		if err != nil {
+			panic(err)
+		}
+		req.addr = net.IP(addr)
+	case IPV6_ADDRESS:
+		addr := make([]byte, 16, 16)
+		_, err := io.ReadFull(conn, addr)
+		if err != nil {
+			panic(err)
+		}
+		req.addr = net.IP(addr)
+	case DOMAIN_ADDRESS:
+		addrLen := make([]byte, 1, 1)
+		_, err := io.ReadFull(conn, addrLen)
+		if err != nil {
+			panic(err)
+		}
+		addr := make([]byte, addrLen[0])
+		_, err = io.ReadFull(conn, addr)
+		if err != nil {
+			panic(err)
+		}
+		req.addr = string(addr)
+	default:
+		panic(fmt.Errorf("%w: %v", ERR_UNKNOWN_ADDRESS_TYPE, req.addrType))
+	}
+	portByte := make([]byte, 2)
+	_, err = io.ReadFull(conn, portByte)
+	if err != nil {
+		panic(err)
+	}
+	req.port = binary.BigEndian.Uint16(portByte)
+
+	return req
 }
