@@ -64,14 +64,14 @@ func (s Server) run() error {
 }
 
 func (s Server) chooseMethod(conn net.Conn) METHOD {
-	VERandNMETHODS := make([]byte, 2, 2)
+	VERandNMETHODS := make([]byte, 2)
 	if _, err := io.ReadFull(conn, VERandNMETHODS); err != nil {
 		panic(fmt.Errorf("read VER and NMETHODS fail, err: %w", err))
 	} else if VERandNMETHODS[0] != SOCKS_VERSION {
 		panic(fmt.Errorf("%w: %v", ERR_SOCKS_VERSION_MISMATCH, VERandNMETHODS[0]))
 	} else {
 		nMethods := int(VERandNMETHODS[1])
-		methods := make([]byte, nMethods, nMethods)
+		methods := make([]byte, nMethods)
 		if _, err := io.ReadFull(conn, methods); err != nil {
 			panic(ERR_READ_METHODS)
 		} else {
@@ -136,7 +136,7 @@ type request struct {
 func (s Server) getRequest(conn net.Conn) request {
 	req := request{}
 	//VER | CMD |  RSV
-	header := make([]byte, 3, 3)
+	header := make([]byte, 3)
 	_, err := io.ReadFull(conn, header)
 	if err != nil {
 		panic(err)
@@ -145,7 +145,7 @@ func (s Server) getRequest(conn net.Conn) request {
 		panic(fmt.Errorf("%w: %v", ERR_SOCKS_VERSION_MISMATCH, header[0]))
 	}
 	req.cmd = CMD(header[1])
-	addrType := make([]byte, 1, 1)
+	addrType := make([]byte, 1)
 	_, err = io.ReadFull(conn, addrType)
 	if err != nil {
 		panic(err)
@@ -153,21 +153,21 @@ func (s Server) getRequest(conn net.Conn) request {
 	req.addrType = ADDRTYPE(addrType[0])
 	switch req.addrType {
 	case IPV4_ADDRESS:
-		addr := make([]byte, 4, 4)
+		addr := make([]byte, 4)
 		_, err := io.ReadFull(conn, addr)
 		if err != nil {
 			panic(err)
 		}
 		req.addr = net.IP(addr)
 	case IPV6_ADDRESS:
-		addr := make([]byte, 16, 16)
+		addr := make([]byte, 16)
 		_, err := io.ReadFull(conn, addr)
 		if err != nil {
 			panic(err)
 		}
 		req.addr = net.IP(addr)
 	case DOMAIN_ADDRESS:
-		addrLen := make([]byte, 1, 1)
+		addrLen := make([]byte, 1)
 		_, err := io.ReadFull(conn, addrLen)
 		if err != nil {
 			panic(err)
