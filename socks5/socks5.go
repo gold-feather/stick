@@ -129,7 +129,7 @@ func (s Server) handleConnection(conn net.Conn) {
 type request struct {
 	cmd      CMD
 	addrType ADDRTYPE
-	addr     interface{}
+	addr     string
 	port     uint16
 }
 
@@ -158,14 +158,14 @@ func (s Server) getRequest(conn net.Conn) request {
 		if err != nil {
 			panic(err)
 		}
-		req.addr = net.IP(addr)
+		req.addr = net.IP(addr).String()
 	case IPV6_ADDRESS:
 		addr := make([]byte, 16)
 		_, err := io.ReadFull(conn, addr)
 		if err != nil {
 			panic(err)
 		}
-		req.addr = net.IP(addr)
+		req.addr = net.IP(addr).String()
 	case DOMAIN_ADDRESS:
 		addrLen := make([]byte, 1)
 		_, err := io.ReadFull(conn, addrLen)
