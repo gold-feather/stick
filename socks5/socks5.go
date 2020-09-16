@@ -33,18 +33,25 @@ var (
 		0x00: NO_AUTHENTICATION_REQUIRED,
 		0x02: USERNAME_PASSWORD,
 	}
+	NOT_SUPPORT_CMD_RESP = []byte{0x05, 0x07, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 )
 
 type Server struct {
-	ip     net.IP
-	port   uint16
-	handle func(conn net.Conn)
+	ip   net.IP
+	port uint16
 }
 
-func (s Server) run() error {
-	listener, err := net.Listen("tcp", string(s.ip))
+func NewServer(ip net.IP, port uint16) Server {
+	return Server{
+		ip:   ip,
+		port: port,
+	}
+}
+
+func (s Server) Run() error {
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.ip.String(), s.port))
 	if err != nil {
-		return nil
+		return err
 	}
 	for {
 		conn, err := listener.Accept()
@@ -123,7 +130,13 @@ func (s Server) handleConnection(conn net.Conn) {
 		return
 	}
 	request := s.getRequest(conn)
-	_ = request
+	switch request.cmd {
+	case CONNECT:
+		s.handleConnectCMD(conn, request)
+	default:
+		conn.Write(NOT_SUPPORT_CMD_RESP)
+		return
+	}
 }
 
 type request struct {
@@ -189,4 +202,27 @@ func (s Server) getRequest(conn net.Conn) request {
 	req.port = binary.BigEndian.Uint16(portByte)
 
 	return req
+}
+
+//TODO: fix https不能用
+func (s Server) handleConnectCMD(conn net.Conn, request request) {
+	conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+	var addrIP string
+	switch request.addrType {
+	case DOMAIN_ADDRESS:
+		ipAddr, err := net.ResolveIPAddr("ip", request.addr)
+		if err != nil {
+			panic(err)
+		}
+		addrIP = ipAddr.IP.String()
+	case IPV4_ADDRESS, IPV6_ADDRESS:
+		addrIP = request.addr
+	}
+
+	reqConn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", addrIP, request.port))
+	if err != nil {
+		panic(err)
+	}
+	go io.Copy(reqConn, conn)
+	io.Copy(conn, reqConn)
 }
