@@ -36,15 +36,25 @@ var (
 	NOT_SUPPORT_CMD_RESP = []byte{0x05, 0x07, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 )
 
+type HandleCMDFunc func(conn net.Conn, request Request) error
+
 type Server struct {
-	ip   net.IP
-	port uint16
+	ip               net.IP
+	port             uint16
+	handleConnectCMD HandleCMDFunc
 }
 
-func NewServer(ip net.IP, port uint16) Server {
+func NewServer(ip net.IP, port uint16, handleCMDFuncMap map[CMD]HandleCMDFunc) Server {
+	var handleConnectCMD HandleCMDFunc
+	if f, ok := handleCMDFuncMap[CONNECT]; ok {
+		handleConnectCMD = f
+	} else {
+		handleConnectCMD = handleConnectCMDLocal
+	}
 	return Server{
-		ip:   ip,
-		port: port,
+		ip:               ip,
+		port:             port,
+		handleConnectCMD: handleConnectCMD,
 	}
 }
 
@@ -62,7 +72,7 @@ func (s Server) Run() error {
 		go func() {
 			defer func() {
 				if err := recover(); err != nil {
-					log.Println(err)
+					log.Printf("%+v", err)
 				}
 			}()
 			s.handleConnection(conn)
@@ -130,7 +140,7 @@ func (s Server) handleConnection(conn net.Conn) {
 		return
 	}
 	request := s.getRequest(conn)
-	switch request.cmd {
+	switch request.CMD {
 	case CONNECT:
 		s.handleConnectCMD(conn, request)
 	default:
@@ -139,15 +149,15 @@ func (s Server) handleConnection(conn net.Conn) {
 	}
 }
 
-type request struct {
-	cmd      CMD
-	addrType ADDRTYPE
-	addr     string
-	port     uint16
+type Request struct {
+	CMD      CMD
+	AddrType ADDRTYPE
+	Addr     string
+	Port     uint16
 }
 
-func (s Server) getRequest(conn net.Conn) request {
-	req := request{}
+func (s Server) getRequest(conn net.Conn) Request {
+	req := Request{}
 	//VER | CMD |  RSV
 	header := make([]byte, 3)
 	_, err := io.ReadFull(conn, header)
@@ -157,28 +167,28 @@ func (s Server) getRequest(conn net.Conn) request {
 	if header[0] != SOCKS_VERSION {
 		panic(fmt.Errorf("%w: %v", ERR_SOCKS_VERSION_MISMATCH, header[0]))
 	}
-	req.cmd = CMD(header[1])
+	req.CMD = CMD(header[1])
 	addrType := make([]byte, 1)
 	_, err = io.ReadFull(conn, addrType)
 	if err != nil {
 		panic(err)
 	}
-	req.addrType = ADDRTYPE(addrType[0])
-	switch req.addrType {
+	req.AddrType = ADDRTYPE(addrType[0])
+	switch req.AddrType {
 	case IPV4_ADDRESS:
 		addr := make([]byte, 4)
 		_, err := io.ReadFull(conn, addr)
 		if err != nil {
 			panic(err)
 		}
-		req.addr = net.IP(addr).String()
+		req.Addr = net.IP(addr).String()
 	case IPV6_ADDRESS:
 		addr := make([]byte, 16)
 		_, err := io.ReadFull(conn, addr)
 		if err != nil {
 			panic(err)
 		}
-		req.addr = net.IP(addr).String()
+		req.Addr = net.IP(addr).String()
 	case DOMAIN_ADDRESS:
 		addrLen := make([]byte, 1)
 		_, err := io.ReadFull(conn, addrLen)
@@ -190,39 +200,39 @@ func (s Server) getRequest(conn net.Conn) request {
 		if err != nil {
 			panic(err)
 		}
-		req.addr = string(addr)
+		req.Addr = string(addr)
 	default:
-		panic(fmt.Errorf("%w: %v", ERR_UNKNOWN_ADDRESS_TYPE, req.addrType))
+		panic(fmt.Errorf("%w: %v", ERR_UNKNOWN_ADDRESS_TYPE, req.AddrType))
 	}
 	portByte := make([]byte, 2)
 	_, err = io.ReadFull(conn, portByte)
 	if err != nil {
 		panic(err)
 	}
-	req.port = binary.BigEndian.Uint16(portByte)
+	req.Port = binary.BigEndian.Uint16(portByte)
 
 	return req
 }
 
-//TODO: fix https不能用
-func (s Server) handleConnectCMD(conn net.Conn, request request) {
+func handleConnectCMDLocal(conn net.Conn, request Request) error {
 	conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
 	var addrIP string
-	switch request.addrType {
+	switch request.AddrType {
 	case DOMAIN_ADDRESS:
-		ipAddr, err := net.ResolveIPAddr("ip", request.addr)
+		ipAddr, err := net.ResolveIPAddr("ip", request.Addr)
 		if err != nil {
 			panic(err)
 		}
 		addrIP = ipAddr.IP.String()
 	case IPV4_ADDRESS, IPV6_ADDRESS:
-		addrIP = request.addr
+		addrIP = request.Addr
 	}
 
-	reqConn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", addrIP, request.port))
+	reqConn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", addrIP, request.Port))
 	if err != nil {
 		panic(err)
 	}
 	go io.Copy(reqConn, conn)
 	io.Copy(conn, reqConn)
+	return nil
 }
