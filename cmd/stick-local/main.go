@@ -11,6 +11,7 @@ import (
 	"stick/model/transport"
 	"stick/socks5"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -53,6 +54,7 @@ func main() {
 			|  1  |  1  | X'00' |  1   | Variable |    2     |
 			+-----+-----+-------+------+----------+----------+
 		*/
+		//每个socks5的连接都对应一个 remoteConn
 		remoteConn := stickLocal.getRemoteConn(s5req2ncReq(request))
 		conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
 
@@ -78,6 +80,7 @@ type stickLocal struct {
 	server  serverInfo
 	wsConn  *websocket.Conn
 	connMap sync.Map
+	idCount uint64
 }
 
 func newStickLocal(info serverInfo) *stickLocal {
@@ -86,7 +89,12 @@ func newStickLocal(info serverInfo) *stickLocal {
 	}
 }
 
+func (local *stickLocal) newId() uint64 {
+	return atomic.AddUint64(&local.idCount, 1)
+}
+
 func (local *stickLocal) connect() {
+	//TODO: 至少把path弄成可设置的
 	u := url.URL{Scheme: "wss", Host: local.server.addr, Path: "/tt"}
 	c, _, err := websocket.DefaultDialer.Dial(u.String(),
 		http.Header{
@@ -99,13 +107,15 @@ func (local *stickLocal) connect() {
 }
 
 func (local *stickLocal) getRemoteConn(newConnect *transport.NewConnect) *remoteConn {
+	id := local.newId()
 	bytes, err := proto.Marshal(newConnect)
 	if err != nil {
 		log.Println(err)
 		return nil
 	}
-	var id uint64 = 0
 	remoteConn := newRemoteConn(local, id)
+	//这里提前存到map中而不是等server返回对newConnect的回复，因为run中需要从map获取remoteConn，才能知道要把这个回复传给谁
+	local.connMap.Store(id, remoteConn)
 	remoteConn.Write(bytes)
 	var ncResp *transport.NewConnectResponse
 	t := time.After(time.Second)
@@ -148,7 +158,7 @@ func (local *stickLocal) get() (*transport.Message, error) {
 	return msg, nil
 }
 
-func (local stickLocal) run() {
+func (local *stickLocal) run() {
 	local.connect()
 	for {
 		msg, err := local.get()
@@ -157,6 +167,7 @@ func (local stickLocal) run() {
 			break
 		}
 		connId := msg.Id
+		//读出server发来的数据，找到对应的remoteConn，直接发过去
 		if v, ok := local.connMap.Load(connId); ok {
 			conn := v.(*remoteConn)
 			switch msg.Type {
@@ -191,7 +202,7 @@ type remoteConn struct {
 }
 
 func newRemoteConn(local *stickLocal, id uint64) *remoteConn {
-	buffer := bytes.NewBuffer(make([]byte, 0, 100))
+	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
 	return &remoteConn{
 		stickLocal:      local,
 		id:              id,
