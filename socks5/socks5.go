@@ -70,11 +70,11 @@ func (s Server) Run() error {
 			continue
 		}
 		go func() {
-			defer func() {
-				if err := recover(); err != nil {
-					log.Printf("%+v", err)
-				}
-			}()
+			//defer func() {
+			//	if err := recover(); err != nil {
+			//		log.Printf("%+v", err)
+			//	}
+			//}()
 			s.handleConnection(conn)
 		}()
 	}

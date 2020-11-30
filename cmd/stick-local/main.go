@@ -21,9 +21,8 @@ import (
 
 func main() {
 	serverInfo := serverInfo{
-		addr:  "",
-		port:  0,
-		token: "",
+		addr:  "localhost:8080",
+		token: "abc",
 	}
 	stickLocal := newStickLocal(serverInfo)
 	go stickLocal.run()
@@ -58,6 +57,7 @@ func main() {
 		remoteConn := stickLocal.getRemoteConn(s5req2ncReq(request))
 		conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
 
+		log.Printf("2 %v\n", remoteConn)
 		go io.Copy(remoteConn, conn)
 		io.Copy(conn, remoteConn)
 		return nil
@@ -72,7 +72,6 @@ func main() {
 
 type serverInfo struct {
 	addr  string
-	port  byte
 	token string
 }
 
@@ -95,7 +94,7 @@ func (local *stickLocal) newId() uint64 {
 
 func (local *stickLocal) connect() {
 	//TODO: 至少把path弄成可设置的
-	u := url.URL{Scheme: "wss", Host: local.server.addr, Path: "/tt"}
+	u := url.URL{Scheme: "ws", Host: local.server.addr, Path: "/tt"}
 	c, _, err := websocket.DefaultDialer.Dial(u.String(),
 		http.Header{
 			"token": []string{local.server.token},
@@ -108,15 +107,26 @@ func (local *stickLocal) connect() {
 
 func (local *stickLocal) getRemoteConn(newConnect *transport.NewConnect) *remoteConn {
 	id := local.newId()
-	bytes, err := proto.Marshal(newConnect)
+	newConnReqBytes, err := proto.Marshal(newConnect)
+	if err != nil {
+		log.Println(err)
+		return nil
+	}
+	msg := &transport.Message{
+		Id:   id,
+		Type: transport.Message_NewConnect,
+		Data: newConnReqBytes,
+	}
+	msgBytes, err := proto.Marshal(msg)
 	if err != nil {
 		log.Println(err)
 		return nil
 	}
 	remoteConn := newRemoteConn(local, id)
+	log.Println(remoteConn.readBf)
 	//这里提前存到map中而不是等server返回对newConnect的回复，因为run中需要从map获取remoteConn，才能知道要把这个回复传给谁
 	local.connMap.Store(id, remoteConn)
-	remoteConn.Write(bytes)
+	local.wsConn.WriteMessage(websocket.BinaryMessage, msgBytes)
 	var ncResp *transport.NewConnectResponse
 	t := time.After(time.Second)
 	select {
@@ -128,6 +138,7 @@ func (local *stickLocal) getRemoteConn(newConnect *transport.NewConnect) *remote
 			return nil
 		}
 	case <-t:
+		log.Println("wait ojbk timeout")
 		return nil
 	}
 }
@@ -174,8 +185,8 @@ func (local *stickLocal) run() {
 			case transport.Message_Data:
 				_, err := conn.readBf.Write(msg.Data)
 				if err != nil {
-					conn.Close()
-
+					log.Println("1 %v", err)
+					panic(err)
 				}
 			case transport.Message_NewConnectResponse:
 				var ncResp transport.NewConnectResponse
@@ -193,8 +204,6 @@ func (local *stickLocal) run() {
 }
 
 type remoteConn struct {
-	sync.RWMutex
-	isClose         bool
 	stickLocal      *stickLocal
 	id              uint64
 	connectInfoChan chan *transport.NewConnectResponse
@@ -202,29 +211,16 @@ type remoteConn struct {
 }
 
 func newRemoteConn(local *stickLocal, id uint64) *remoteConn {
-	buffer := bytes.NewBuffer(make([]byte, 0, 1024))
+	var buffer bytes.Buffer
 	return &remoteConn{
 		stickLocal:      local,
 		id:              id,
 		connectInfoChan: make(chan *transport.NewConnectResponse),
-		readBf:          buffer,
-	}
-}
-
-func (conn *remoteConn) Close() {
-	if !conn.isClose {
-		defer conn.Unlock()
-		conn.Lock()
-		conn.isClose = true
+		readBf:          &buffer,
 	}
 }
 
 func (conn *remoteConn) Write(p []byte) (int, error) {
-	defer conn.RUnlock()
-	conn.RLock()
-	if conn.isClose {
-		return 0, io.ErrClosedPipe
-	}
 	message := &transport.Message{
 		Id:   conn.id,
 		Type: transport.Message_Data,
@@ -235,10 +231,7 @@ func (conn *remoteConn) Write(p []byte) (int, error) {
 }
 
 func (conn *remoteConn) Read(p []byte) (int, error) {
-	defer conn.RUnlock()
-	conn.RLock()
-	if conn.isClose {
-		return 0, io.ErrClosedPipe
-	}
+	log.Println(conn.readBf == nil)
+	log.Println(p)
 	return conn.readBf.Read(p)
 }
