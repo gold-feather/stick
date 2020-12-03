@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
+	"stick/object"
+
+	"go.uber.org/zap"
 )
 
 type METHOD byte
@@ -34,6 +36,8 @@ var (
 		0x02: USERNAME_PASSWORD,
 	}
 	NOT_SUPPORT_CMD_RESP = []byte{0x05, 0x07, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+
+	logger = object.GetLogger()
 )
 
 type HandleCMDFunc func(conn net.Conn, request Request) error
@@ -66,7 +70,7 @@ func (s Server) Run() error {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println(err)
+			logger.Error("accept conn err", zap.Error(err))
 			continue
 		}
 		go func() {
@@ -164,6 +168,7 @@ func (s Server) getRequest(conn net.Conn) Request {
 	if err != nil {
 		panic(err)
 	}
+	logger.Info("get request header", zap.Any("header", header))
 	if header[0] != SOCKS_VERSION {
 		panic(fmt.Errorf("%w: %v", ERR_SOCKS_VERSION_MISMATCH, header[0]))
 	}
@@ -211,6 +216,7 @@ func (s Server) getRequest(conn net.Conn) Request {
 	}
 	req.Port = binary.BigEndian.Uint16(portByte)
 
+	logger.Info("get req", zap.Any("req", req))
 	return req
 }
 

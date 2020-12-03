@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,9 +13,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.uber.org/zap"
+
+	"stick/object"
+
 	"github.com/golang/protobuf/proto"
 
 	"github.com/gorilla/websocket"
+)
+
+var (
+	logger = object.GetLogger()
 )
 
 func main() {
@@ -57,9 +64,13 @@ func main() {
 		remoteConn := stickLocal.getRemoteConn(s5req2ncReq(request))
 		conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
 
-		log.Printf("2 %v\n", remoteConn)
-		go io.Copy(remoteConn, conn)
-		io.Copy(conn, remoteConn)
+		logger.Info("get remoteConn", zap.Uint64("id", remoteConn.id))
+		f := func(w io.Writer, r io.Reader) {
+			n, err := io.Copy(w, r)
+			logger.Info("copy end", zap.Int64("len", n), zap.Error(err))
+		}
+		go f(remoteConn, conn)
+		f(conn, remoteConn)
 		return nil
 	}
 	socks5server := socks5.NewServer(net.IPv4(127, 0, 0, 1), 8888,
@@ -103,62 +114,53 @@ func (local *stickLocal) connect() {
 		panic(err)
 	}
 	local.wsConn = c
+	logger.Info("connect to server success")
 }
 
 func (local *stickLocal) getRemoteConn(newConnect *transport.NewConnect) *remoteConn {
 	id := local.newId()
-	newConnReqBytes, err := proto.Marshal(newConnect)
-	if err != nil {
-		log.Println(err)
-		return nil
-	}
+	newConnReqBytes, _ := proto.Marshal(newConnect)
 	msg := &transport.Message{
 		Id:   id,
 		Type: transport.Message_NewConnect,
 		Data: newConnReqBytes,
 	}
-	msgBytes, err := proto.Marshal(msg)
-	if err != nil {
-		log.Println(err)
-		return nil
-	}
+	msgBytes, _ := proto.Marshal(msg)
 	remoteConn := newRemoteConn(local, id)
-	log.Println(remoteConn.readBf)
 	//这里提前存到map中而不是等server返回对newConnect的回复，因为run中需要从map获取remoteConn，才能知道要把这个回复传给谁
 	local.connMap.Store(id, remoteConn)
 	local.wsConn.WriteMessage(websocket.BinaryMessage, msgBytes)
 	var ncResp *transport.NewConnectResponse
-	t := time.After(time.Second)
+	t := time.After(time.Second * 20)
 	select {
 	case ncResp = <-remoteConn.connectInfoChan:
 		if ncResp.Ojbk {
+			logger.Info("new connect", zap.Uint64("id", id))
 			return remoteConn
 		} else {
-			log.Println("not ojbk")
+			logger.Warn("not ojbk", zap.Uint64("id", id))
 			return nil
 		}
 	case <-t:
-		log.Println("wait ojbk timeout")
+		logger.Warn("wait ojbk timeout", zap.Uint64("id", id))
 		return nil
 	}
 }
 
 func (local *stickLocal) send(message *transport.Message) error {
-	bytes, err := proto.Marshal(message)
-	if err != nil {
-		return err
-	}
-	return local.wsConn.WriteMessage(websocket.BinaryMessage, bytes)
+	msgBytes, _ := proto.Marshal(message)
+	logger.Debug("write msgBytes to ws", zap.Int("len", len(msgBytes)))
+	return local.wsConn.WriteMessage(websocket.BinaryMessage, msgBytes)
 }
 
 func (local *stickLocal) get() (*transport.Message, error) {
 	messageType, bytes, err := local.wsConn.ReadMessage()
 	if messageType != websocket.BinaryMessage {
-		log.Printf("msgType: %d", messageType)
+		logger.Warn("wrong message type", zap.Int("type", messageType))
 		return nil, fmt.Errorf("")
 	}
 	if err != nil {
-		log.Printf("err: %v", err)
+		logger.Error("read ws err", zap.Error(err))
 		return nil, err
 	}
 	msg := &transport.Message{}
@@ -174,28 +176,28 @@ func (local *stickLocal) run() {
 	for {
 		msg, err := local.get()
 		if err != nil {
-			log.Println(err)
+			logger.Error("get transport.Message fail", zap.Error(err))
 			break
 		}
 		connId := msg.Id
+		logger.Debug("read msg", zap.Uint64("id", connId), zap.Any("msgType", msg.Type))
 		//读出server发来的数据，找到对应的remoteConn，直接发过去
 		if v, ok := local.connMap.Load(connId); ok {
 			conn := v.(*remoteConn)
+			logger.Debug("get remoteConn from connMap", zap.Uint64("id", connId))
 			switch msg.Type {
 			case transport.Message_Data:
+				logger.Debug("writing msg.Data to bf", zap.Int("len", len(msg.Data)))
 				_, err := conn.readBf.Write(msg.Data)
 				if err != nil {
-					log.Println("1 %v", err)
+					logger.Error("write msg to bf fail", zap.Error(err))
 					panic(err)
 				}
 			case transport.Message_NewConnectResponse:
 				var ncResp transport.NewConnectResponse
-				err := proto.Unmarshal(msg.Data, &ncResp)
-				if err != nil {
-					log.Println(err)
-				} else {
-					conn.connectInfoChan <- &ncResp
-				}
+				_ = proto.Unmarshal(msg.Data, &ncResp)
+				logger.Info("newConnResp from server", zap.Uint64("id", msg.Id))
+				conn.connectInfoChan <- &ncResp
 			}
 		} else {
 			//TODO：服务器返回不存在的连接id
@@ -220,18 +222,22 @@ func newRemoteConn(local *stickLocal, id uint64) *remoteConn {
 	}
 }
 
-func (conn *remoteConn) Write(p []byte) (int, error) {
+func (rc *remoteConn) Write(p []byte) (int, error) {
+	logger.Debug("write remoteConn", zap.Int("len", len(p)))
 	message := &transport.Message{
-		Id:   conn.id,
+		Id:   rc.id,
 		Type: transport.Message_Data,
 		Data: p,
 	}
-	conn.stickLocal.send(message)
+	rc.stickLocal.send(message)
 	return len(p), nil
 }
 
-func (conn *remoteConn) Read(p []byte) (int, error) {
-	log.Println(conn.readBf == nil)
-	log.Println(p)
-	return conn.readBf.Read(p)
+func (rc *remoteConn) Read(p []byte) (int, error) {
+	if rc.readBf.Len() == 0 {
+		return 0, nil
+	}
+	n, err := rc.readBf.Read(p)
+	logger.Debug("read remoteConn from bf", zap.Int("len", n), zap.Error(err))
+	return n, err
 }
