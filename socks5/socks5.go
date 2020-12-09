@@ -43,12 +43,12 @@ var (
 type HandleCMDFunc func(conn net.Conn, request Request) error
 
 type Server struct {
-	ip               net.IP
+	ip               string
 	port             uint16
 	handleConnectCMD HandleCMDFunc
 }
 
-func NewServer(ip net.IP, port uint16, handleCMDFuncMap map[CMD]HandleCMDFunc) Server {
+func NewServer(ip string, port uint16, handleCMDFuncMap map[CMD]HandleCMDFunc) Server {
 	var handleConnectCMD HandleCMDFunc
 	if f, ok := handleCMDFuncMap[CONNECT]; ok {
 		handleConnectCMD = f
@@ -63,7 +63,7 @@ func NewServer(ip net.IP, port uint16, handleCMDFuncMap map[CMD]HandleCMDFunc) S
 }
 
 func (s Server) Run() error {
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.ip.String(), s.port))
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.ip, s.port))
 	if err != nil {
 		return err
 	}
@@ -168,7 +168,7 @@ func (s Server) getRequest(conn net.Conn) Request {
 	if err != nil {
 		panic(err)
 	}
-	logger.Info("get request header", zap.Any("header", header))
+	logger.Info("get request header", zap.String("header", fmt.Sprint(header)), zap.String("ip", conn.RemoteAddr().String()))
 	if header[0] != SOCKS_VERSION {
 		panic(fmt.Errorf("%w: %v", ERR_SOCKS_VERSION_MISMATCH, header[0]))
 	}

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"runtime"
 	"stick/model/transport"
 	"stick/object"
 	"sync"
@@ -19,7 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var addr = flag.String("addr", "localhost:8080", "http service address")
+var addr = flag.String("addr", "0.0.0.0:8080", "http service address")
 
 var (
 	upgrader = websocket.Upgrader{}
@@ -155,8 +156,8 @@ func (c *conn) Write(p []byte) (int, error) {
 }
 
 func (c *conn) Read(p []byte) (int, error) {
-	if c.readBf.Len() == 0 {
-		return 0, nil
+	for c.readBf.Len() == 0 {
+		runtime.Gosched()
 	}
 	n, err := c.readBf.Read(p)
 	logger.Debug("read conn2local from bf", zap.Int("len", n), zap.Error(err))

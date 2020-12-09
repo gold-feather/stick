@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"stick/model/transport"
 	"stick/socks5"
 	"sync"
@@ -23,13 +25,24 @@ import (
 )
 
 var (
-	logger = object.GetLogger()
+	logger     = object.GetLogger()
+	serverAddr = flag.String("server", "", "服务器地址")
+	token      = flag.String("token", "", "密码")
+	socks5Addr = flag.String("sock5addr", "127.0.0.1", "sock5监听ip")
+	socks5Port = flag.Int("socks5port", 8888, "socks5监听port")
 )
 
+func init() {
+	flag.Parse()
+}
+
 func main() {
+	if serverAddr == nil || len(*serverAddr) == 0 {
+		logger.Fatal("need -server")
+	}
 	serverInfo := serverInfo{
-		addr:  "localhost:8080",
-		token: "abc",
+		addr:  *serverAddr,
+		token: *token,
 	}
 	stickLocal := newStickLocal(serverInfo)
 	go stickLocal.run()
@@ -73,7 +86,7 @@ func main() {
 		f(conn, remoteConn)
 		return nil
 	}
-	socks5server := socks5.NewServer(net.IPv4(127, 0, 0, 1), 8888,
+	socks5server := socks5.NewServer(*socks5Addr, uint16(*socks5Port),
 		map[socks5.CMD]socks5.HandleCMDFunc{
 			socks5.CONNECT: handleConnectCMD,
 		})
@@ -87,10 +100,11 @@ type serverInfo struct {
 }
 
 type stickLocal struct {
-	server  serverInfo
-	wsConn  *websocket.Conn
-	connMap sync.Map
-	idCount uint64
+	server       serverInfo
+	wsConn       *websocket.Conn
+	wsWriteMutex sync.Mutex
+	connMap      sync.Map
+	idCount      uint64
 }
 
 func newStickLocal(info serverInfo) *stickLocal {
@@ -101,6 +115,12 @@ func newStickLocal(info serverInfo) *stickLocal {
 
 func (local *stickLocal) newId() uint64 {
 	return atomic.AddUint64(&local.idCount, 1)
+}
+
+func (local *stickLocal) writeMessage(msg []byte) error {
+	local.wsWriteMutex.Lock()
+	defer local.wsWriteMutex.Unlock()
+	return local.wsConn.WriteMessage(websocket.BinaryMessage, msg)
 }
 
 func (local *stickLocal) connect() {
@@ -129,7 +149,7 @@ func (local *stickLocal) getRemoteConn(newConnect *transport.NewConnect) *remote
 	remoteConn := newRemoteConn(local, id)
 	//这里提前存到map中而不是等server返回对newConnect的回复，因为run中需要从map获取remoteConn，才能知道要把这个回复传给谁
 	local.connMap.Store(id, remoteConn)
-	local.wsConn.WriteMessage(websocket.BinaryMessage, msgBytes)
+	local.writeMessage(msgBytes)
 	var ncResp *transport.NewConnectResponse
 	t := time.After(time.Second * 20)
 	select {
@@ -150,7 +170,7 @@ func (local *stickLocal) getRemoteConn(newConnect *transport.NewConnect) *remote
 func (local *stickLocal) send(message *transport.Message) error {
 	msgBytes, _ := proto.Marshal(message)
 	logger.Debug("write msgBytes to ws", zap.Int("len", len(msgBytes)))
-	return local.wsConn.WriteMessage(websocket.BinaryMessage, msgBytes)
+	return local.writeMessage(msgBytes)
 }
 
 func (local *stickLocal) get() (*transport.Message, error) {
@@ -233,9 +253,10 @@ func (rc *remoteConn) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+//TODO: 这么搞会cpu100%，感觉最简单的办法是循环加计数
 func (rc *remoteConn) Read(p []byte) (int, error) {
-	if rc.readBf.Len() == 0 {
-		return 0, nil
+	for rc.readBf.Len() == 0 {
+		runtime.Gosched()
 	}
 	n, err := rc.readBf.Read(p)
 	logger.Debug("read remoteConn from bf", zap.Int("len", n), zap.Error(err))
