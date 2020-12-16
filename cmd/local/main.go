@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
-	"runtime"
 	"stick/model/transport"
 	"stick/socks5"
 	"sync"
@@ -28,7 +26,7 @@ var (
 	logger     = object.GetLogger()
 	serverAddr = flag.String("server", "", "服务器地址")
 	token      = flag.String("token", "", "密码")
-	socks5Addr = flag.String("sock5addr", "127.0.0.1", "sock5监听ip")
+	socks5Addr = flag.String("socks5addr", "127.0.0.1", "sock5监听ip")
 	socks5Port = flag.Int("socks5port", 8888, "socks5监听port")
 )
 
@@ -74,7 +72,7 @@ func main() {
 			+-----+-----+-------+------+----------+----------+
 		*/
 		//每个socks5的连接都对应一个 remoteConn
-		remoteConn := stickLocal.getRemoteConn(s5req2ncReq(request))
+		remoteConn := stickLocal.getRemoteConn(s5req2ncReq(request), conn)
 		conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
 
 		logger.Info("get remoteConn", zap.Uint64("id", remoteConn.id))
@@ -82,8 +80,7 @@ func main() {
 			n, err := io.Copy(w, r)
 			logger.Info("copy end", zap.Int64("len", n), zap.Error(err))
 		}
-		go f(remoteConn, conn)
-		f(conn, remoteConn)
+		f(remoteConn, conn)
 		return nil
 	}
 	socks5server := socks5.NewServer(*socks5Addr, uint16(*socks5Port),
@@ -137,7 +134,7 @@ func (local *stickLocal) connect() {
 	logger.Info("connect to server success")
 }
 
-func (local *stickLocal) getRemoteConn(newConnect *transport.NewConnect) *remoteConn {
+func (local *stickLocal) getRemoteConn(newConnect *transport.NewConnect, conn net.Conn) *remoteConn {
 	id := local.newId()
 	newConnReqBytes, _ := proto.Marshal(newConnect)
 	msg := &transport.Message{
@@ -146,7 +143,7 @@ func (local *stickLocal) getRemoteConn(newConnect *transport.NewConnect) *remote
 		Data: newConnReqBytes,
 	}
 	msgBytes, _ := proto.Marshal(msg)
-	remoteConn := newRemoteConn(local, id)
+	remoteConn := newRemoteConn(local, id, conn)
 	//这里提前存到map中而不是等server返回对newConnect的回复，因为run中需要从map获取remoteConn，才能知道要把这个回复传给谁
 	local.connMap.Store(id, remoteConn)
 	local.writeMessage(msgBytes)
@@ -208,10 +205,15 @@ func (local *stickLocal) run() {
 			switch msg.Type {
 			case transport.Message_Data:
 				logger.Debug("writing msg.Data to bf", zap.Int("len", len(msg.Data)))
-				_, err := conn.readBf.Write(msg.Data)
-				if err != nil {
-					logger.Error("write msg to bf fail", zap.Error(err))
-					panic(err)
+				index := 0
+				for index != len(msg.Data) {
+					n, err := conn.localConn.Write(msg.Data[index:])
+					if err != nil {
+						logger.Error("write msg to localconn fail", zap.Int("n", n), zap.Error(err))
+						panic(err)
+					}
+					logger.Info("write msg to localconn", zap.Int("len", n))
+					index += n
 				}
 			case transport.Message_NewConnectResponse:
 				var ncResp transport.NewConnectResponse
@@ -229,16 +231,15 @@ type remoteConn struct {
 	stickLocal      *stickLocal
 	id              uint64
 	connectInfoChan chan *transport.NewConnectResponse
-	readBf          *bytes.Buffer
+	localConn       net.Conn
 }
 
-func newRemoteConn(local *stickLocal, id uint64) *remoteConn {
-	var buffer bytes.Buffer
+func newRemoteConn(local *stickLocal, id uint64, conn net.Conn) *remoteConn {
 	return &remoteConn{
 		stickLocal:      local,
 		id:              id,
 		connectInfoChan: make(chan *transport.NewConnectResponse),
-		readBf:          &buffer,
+		localConn:       conn,
 	}
 }
 
@@ -251,14 +252,4 @@ func (rc *remoteConn) Write(p []byte) (int, error) {
 	}
 	rc.stickLocal.send(message)
 	return len(p), nil
-}
-
-//TODO: 这么搞会cpu100%，感觉最简单的办法是循环加计数
-func (rc *remoteConn) Read(p []byte) (int, error) {
-	for rc.readBf.Len() == 0 {
-		runtime.Gosched()
-	}
-	n, err := rc.readBf.Read(p)
-	logger.Debug("read remoteConn from bf", zap.Int("len", n), zap.Error(err))
-	return n, err
 }

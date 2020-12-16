@@ -34,6 +34,11 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
 
+type wsWrapper struct {
+	*websocket.Conn
+	*sync.Mutex
+}
+
 func echo(w http.ResponseWriter, r *http.Request) {
 	token := r.Header.Get("token")
 	if token != "abc" {
@@ -48,9 +53,13 @@ func echo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.Close()
+	wsWrapper := &wsWrapper{
+		Conn:  c,
+		Mutex: &sync.Mutex{},
+	}
 	var m sync.Map
 	for {
-		messageType, messageBytes, err := c.ReadMessage()
+		messageType, messageBytes, err := wsWrapper.ReadMessage()
 		if err != nil {
 			logger.Error("read ws error", zap.Error(err))
 			break
@@ -71,7 +80,7 @@ func echo(w http.ResponseWriter, r *http.Request) {
 			var newConnectData transport.NewConnect
 			err = proto.Unmarshal(message.Data, &newConnectData)
 			connID := message.Id
-			conn := newConnect(connID, &newConnectData, c)
+			conn := newConnect(connID, &newConnectData, wsWrapper)
 			logger.Info("get newConnReq", zap.Uint64("id", connID), zap.Any("conn", conn))
 
 			//建立连接，把连接加到map，返回ojbk
@@ -84,7 +93,9 @@ func echo(w http.ResponseWriter, r *http.Request) {
 				Data: ojbkBytes,
 			}
 			respBytes, _ := proto.Marshal(resp)
-			err = c.WriteMessage(websocket.BinaryMessage, respBytes)
+			wsWrapper.Lock()
+			err = wsWrapper.WriteMessage(websocket.BinaryMessage, respBytes)
+			wsWrapper.Unlock()
 			if err != nil {
 				panic(err)
 			}
@@ -111,11 +122,11 @@ func echo(w http.ResponseWriter, r *http.Request) {
 type conn struct {
 	id         uint64
 	remoteConn net.Conn
-	wb         *websocket.Conn
+	wsWrapper  *wsWrapper
 	readBf     *bytes.Buffer
 }
 
-func newConnect(id uint64, connect *transport.NewConnect, wb *websocket.Conn) *conn {
+func newConnect(id uint64, connect *transport.NewConnect, wsWrapper *wsWrapper) *conn {
 	var ip string
 	//好像如果不用自定义dns的话，这里好像没啥用，dial可以直接输入的
 	switch connect.AddrType {
@@ -138,7 +149,7 @@ func newConnect(id uint64, connect *transport.NewConnect, wb *websocket.Conn) *c
 	return &conn{
 		id:         id,
 		remoteConn: remoteConn,
-		wb:         wb,
+		wsWrapper:  wsWrapper,
 		readBf:     &buffer,
 	}
 }
@@ -151,7 +162,7 @@ func (c *conn) Write(p []byte) (int, error) {
 		Data: p,
 	}
 	msgBytes, _ := proto.Marshal(message)
-	c.wb.WriteMessage(websocket.BinaryMessage, msgBytes)
+	c.wsWrapper.WriteMessage(websocket.BinaryMessage, msgBytes)
 	return len(p), nil
 }
 
