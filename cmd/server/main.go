@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
-	"runtime"
 	"stick/model/transport"
 	"stick/object"
 	"sync"
@@ -106,13 +104,21 @@ func echo(w http.ResponseWriter, r *http.Request) {
 				logger.Info("copy end", zap.Int64("len", n), zap.Error(err))
 			}
 			go f(conn, conn.remoteConn)
-			go f(conn.remoteConn, conn)
 		case transport.Message_Data:
 			var data = message.Data
 			if v, ok := m.Load(message.Id); ok {
 				conn := v.(*conn)
 				logger.Info("write conn.bf", zap.Int("len", len(data)))
-				conn.readBf.Write(data)
+				index := 0
+				for index != len(data) {
+					n, err := conn.remoteConn.Write(data[index:])
+					if err != nil {
+						logger.Error("write msg to remoteConn fail", zap.Int("n", n), zap.Error(err))
+						panic(err)
+					}
+					logger.Info("write msg to remoteConn", zap.Int("len", n))
+					index += n
+				}
 			}
 		}
 
@@ -123,7 +129,6 @@ type conn struct {
 	id         uint64
 	remoteConn net.Conn
 	wsWrapper  *wsWrapper
-	readBf     *bytes.Buffer
 }
 
 func newConnect(id uint64, connect *transport.NewConnect, wsWrapper *wsWrapper) *conn {
@@ -145,12 +150,10 @@ func newConnect(id uint64, connect *transport.NewConnect, wsWrapper *wsWrapper) 
 	if err != nil {
 		panic(err)
 	}
-	var buffer bytes.Buffer
 	return &conn{
 		id:         id,
 		remoteConn: remoteConn,
 		wsWrapper:  wsWrapper,
-		readBf:     &buffer,
 	}
 }
 
@@ -164,13 +167,4 @@ func (c *conn) Write(p []byte) (int, error) {
 	msgBytes, _ := proto.Marshal(message)
 	c.wsWrapper.WriteMessage(websocket.BinaryMessage, msgBytes)
 	return len(p), nil
-}
-
-func (c *conn) Read(p []byte) (int, error) {
-	for c.readBf.Len() == 0 {
-		runtime.Gosched()
-	}
-	n, err := c.readBf.Read(p)
-	logger.Debug("read conn2local from bf", zap.Int("len", n), zap.Error(err))
-	return n, err
 }
