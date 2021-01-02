@@ -199,7 +199,7 @@ func (local *stickLocal) run() {
 				for index != len(msg.Data) {
 					n, err := conn.localConn.Write(msg.Data[index:])
 					if err != nil {
-						logger.Error("write msg to localconn fail", zap.Int("n", n), zap.Error(err))
+						logger.Error("write msg to localconn fail", zap.Int("n", n), zap.Int("index", index), zap.Error(err))
 						//TODO: 需要从map删连接，不止这一处缺东西
 						panic(err)
 					}

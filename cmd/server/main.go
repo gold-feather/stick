@@ -98,7 +98,6 @@ func echo(w http.ResponseWriter, r *http.Request) {
 				panic(err)
 			}
 			logger.Info("return ojbk", zap.Uint64("id", connID))
-			//TODO: 然后还得有个协程在读连接数据并转发给客户端
 			f := func(w io.Writer, r io.Reader) {
 				n, err := io.Copy(w, r)
 				logger.Info("copy end", zap.Int64("len", n), zap.Error(err))
@@ -165,6 +164,8 @@ func (c *conn) Write(p []byte) (int, error) {
 		Data: p,
 	}
 	msgBytes, _ := proto.Marshal(message)
+	c.wsWrapper.Lock()
 	c.wsWrapper.WriteMessage(websocket.BinaryMessage, msgBytes)
+	c.wsWrapper.Unlock()
 	return len(p), nil
 }
