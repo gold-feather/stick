@@ -11,7 +11,6 @@ import (
 	"stick/socks5"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"go.uber.org/zap"
 
@@ -146,22 +145,9 @@ func (local *stickLocal) getRemoteConn(newConnect *transport.NewConnect, conn ne
 	remoteConn := newRemoteConn(local, id, conn)
 	//这里提前存到map中而不是等server返回对newConnect的回复，因为run中需要从map获取remoteConn，才能知道要把这个回复传给谁
 	local.connMap.Store(id, remoteConn)
+	logger.Info("writing newConn req to ws", zap.Uint64("id", id))
 	local.writeMessage(msgBytes)
-	var ncResp *transport.NewConnectResponse
-	t := time.After(time.Second * 20)
-	select {
-	case ncResp = <-remoteConn.connectInfoChan:
-		if ncResp.Ojbk {
-			logger.Info("new connect", zap.Uint64("id", id))
-			return remoteConn
-		} else {
-			logger.Warn("not ojbk", zap.Uint64("id", id))
-			return nil
-		}
-	case <-t:
-		logger.Warn("wait ojbk timeout", zap.Uint64("id", id))
-		return nil
-	}
+	return remoteConn
 }
 
 func (local *stickLocal) send(message *transport.Message) error {
@@ -204,12 +190,17 @@ func (local *stickLocal) run() {
 			logger.Debug("get remoteConn from connMap", zap.Uint64("id", connId))
 			switch msg.Type {
 			case transport.Message_Data:
-				logger.Debug("writing msg.Data to bf", zap.Int("len", len(msg.Data)))
+				if !conn.isOpen {
+					logger.Warn("conn not open", zap.Uint64("id", conn.id))
+					panic(fmt.Errorf("msg for conn not open, id: %d", msg.Id))
+				}
+				logger.Debug("writing msg.Data to localConn", zap.Int("len", len(msg.Data)))
 				index := 0
 				for index != len(msg.Data) {
 					n, err := conn.localConn.Write(msg.Data[index:])
 					if err != nil {
 						logger.Error("write msg to localconn fail", zap.Int("n", n), zap.Error(err))
+						//TODO: 需要从map删连接，不止这一处缺东西
 						panic(err)
 					}
 					logger.Info("write msg to localconn", zap.Int("len", n))
@@ -218,8 +209,14 @@ func (local *stickLocal) run() {
 			case transport.Message_NewConnectResponse:
 				var ncResp transport.NewConnectResponse
 				_ = proto.Unmarshal(msg.Data, &ncResp)
-				logger.Info("newConnResp from server", zap.Uint64("id", msg.Id))
-				conn.connectInfoChan <- &ncResp
+				logger.Info("newConnResp from server", zap.Uint64("id", conn.id))
+				if ncResp.Ojbk {
+					conn.isOpen = true
+					logger.Info("newConn", zap.Uint64("id", msg.Id))
+				} else {
+					conn.Close()
+					logger.Info("open conn fail", zap.Uint64("id", conn.id))
+				}
 			}
 		} else {
 			//TODO：服务器返回不存在的连接id
@@ -228,18 +225,17 @@ func (local *stickLocal) run() {
 }
 
 type remoteConn struct {
-	stickLocal      *stickLocal
-	id              uint64
-	connectInfoChan chan *transport.NewConnectResponse
-	localConn       net.Conn
+	isOpen     bool
+	stickLocal *stickLocal
+	id         uint64
+	localConn  net.Conn
 }
 
 func newRemoteConn(local *stickLocal, id uint64, conn net.Conn) *remoteConn {
 	return &remoteConn{
-		stickLocal:      local,
-		id:              id,
-		connectInfoChan: make(chan *transport.NewConnectResponse),
-		localConn:       conn,
+		stickLocal: local,
+		id:         id,
+		localConn:  conn,
 	}
 }
 
@@ -252,4 +248,9 @@ func (rc *remoteConn) Write(p []byte) (int, error) {
 	}
 	rc.stickLocal.send(message)
 	return len(p), nil
+}
+
+//TODO 用于建立连接失败时关闭，尽早让s5客户端知道
+func (rc *remoteConn) Close() error {
+	return nil
 }
