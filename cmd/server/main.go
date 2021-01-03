@@ -10,6 +10,7 @@ import (
 	"stick/model/transport"
 	"stick/object"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -164,7 +165,9 @@ func (c *conn) Write(p []byte) (int, error) {
 		Data: p,
 	}
 	msgBytes, _ := proto.Marshal(message)
+	t := time.Now()
 	c.wsWrapper.Lock()
+	logger.Debug("lock wsWrapper", zap.Duration("lockUse", time.Since(t)))
 	c.wsWrapper.WriteMessage(websocket.BinaryMessage, msgBytes)
 	c.wsWrapper.Unlock()
 	return len(p), nil

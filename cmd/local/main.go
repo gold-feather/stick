@@ -34,9 +34,6 @@ func init() {
 }
 
 func main() {
-	if serverAddr == nil || len(*serverAddr) == 0 {
-		logger.Fatal("need -server")
-	}
 	serverInfo := serverInfo{
 		addr:  *serverAddr,
 		token: *token,
@@ -121,7 +118,7 @@ func (local *stickLocal) writeMessage(msg []byte) error {
 
 func (local *stickLocal) connect() {
 	//TODO: 至少把path弄成可设置的
-	u := url.URL{Scheme: "ws", Host: local.server.addr, Path: "/tt"}
+	u := url.URL{Scheme: "wss", Host: local.server.addr, Path: "/tt"}
 	c, _, err := websocket.DefaultDialer.Dial(u.String(),
 		http.Header{
 			"token": []string{local.server.token},
