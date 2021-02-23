@@ -133,7 +133,7 @@ type conn struct {
 
 func newConnect(id uint64, connect *transport.NewConnect, wsWrapper *wsWrapper) *conn {
 	var ip string
-	//好像如果不用自定义dns的话，这里好像没啥用，dial可以直接输入的
+	//如果不用自定义dns的话，这里好像没啥用，dial可以直接输入域名的
 	switch connect.AddrType {
 	case transport.NewConnect_IPV4, transport.NewConnect_IPV6:
 		ip = connect.Address

@@ -27,6 +27,7 @@ var (
 	token      = flag.String("token", "", "密码")
 	socks5Addr = flag.String("socks5addr", "127.0.0.1", "sock5监听ip")
 	socks5Port = flag.Int("socks5port", 8888, "socks5监听port")
+	connCount  = flag.Int("connCount", 1, "建立连接的数量")
 )
 
 func init() {
@@ -38,8 +39,12 @@ func main() {
 		addr:  *serverAddr,
 		token: *token,
 	}
-	stickLocal := newStickLocal(serverInfo)
-	go stickLocal.run()
+	stickLocalList := make([]*stickLocal, 0, *connCount)
+	for i := range stickLocalList {
+		stickLocal := newStickLocal(serverInfo)
+		go stickLocal.run()
+		stickLocalList[i] = stickLocal
+	}
 
 	s5req2ncReq := func(request socks5.Request) *transport.NewConnect {
 		var addrType transport.NewConnect_AddrType
@@ -58,8 +63,9 @@ func main() {
 		}
 	}
 
+	var num int64
 	handleConnectCMD := func(conn net.Conn, request socks5.Request) error {
-		//TODO: 应该先和server连接，看情况返回的，这里直接返回成功了
+		//应该先和server连接，看情况返回的，这里直接返回成功了，小trick加快建立连接速度
 		/*
 			+-----+-----+-------+------+----------+----------+
 			| VER | REP |  RSV  | ATYP | BND.ADDR | BND.PORT |
@@ -67,6 +73,8 @@ func main() {
 			|  1  |  1  | X'00' |  1   | Variable |    2     |
 			+-----+-----+-------+------+----------+----------+
 		*/
+		//获取一个stickLocal
+		stickLocal := stickLocalList[atomic.AddInt64(&num, 1)]
 		//每个socks5的连接都对应一个 remoteConn
 		remoteConn := stickLocal.getRemoteConn(s5req2ncReq(request), conn)
 		conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
@@ -79,6 +87,7 @@ func main() {
 		f(remoteConn, conn)
 		return nil
 	}
+
 	socks5server := socks5.NewServer(*socks5Addr, uint16(*socks5Port),
 		map[socks5.CMD]socks5.HandleCMDFunc{
 			socks5.CONNECT: handleConnectCMD,

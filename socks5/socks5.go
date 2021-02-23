@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"stick/object"
 
@@ -15,7 +16,7 @@ type METHOD byte
 type CMD byte
 type ADDRTYPE byte
 
-//只定义了两个验证方式，其他的懒得实现
+//只定义了两个验证方式，其他的感觉用不到，不需要实现
 const (
 	SOCKS_VERSION              byte     = 0x05
 	NO_AUTHENTICATION_REQUIRED METHOD   = 0x00
@@ -74,11 +75,11 @@ func (s Server) Run() error {
 			continue
 		}
 		go func() {
-			//defer func() {
-			//	if err := recover(); err != nil {
-			//		log.Printf("%+v", err)
-			//	}
-			//}()
+			defer func() {
+				if err := recover(); err != nil {
+					log.Printf("%+v", err)
+				}
+			}()
 			s.handleConnection(conn)
 		}()
 	}
@@ -139,6 +140,7 @@ func (s Server) auth(conn net.Conn, method METHOD) bool {
 
 func (s Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
+	//选择socks5 auth方法
 	method := s.chooseMethod(conn)
 	if !s.auth(conn, method) {
 		return
@@ -148,6 +150,7 @@ func (s Server) handleConnection(conn net.Conn) {
 	case CONNECT:
 		s.handleConnectCMD(conn, request)
 	default:
+		//暂不支持其他CMD，直接返回
 		conn.Write(NOT_SUPPORT_CMD_RESP)
 		return
 	}
